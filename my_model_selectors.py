@@ -76,8 +76,27 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        best_model = None
+        best_bic = float("inf")
+
+        for num_components in range(self.min_n_components, self.max_n_components + 1):
+            candidate_model = self.base_model(num_components)
+
+            try:
+                logL = candidate_model.score(self.X, self.lengths)
+                num_samples, num_features = self.X.shape
+                num_params = num_components ** 2 + 2 * num_components * num_features - 1
+                bic = -2 * logL + num_params * np.log(num_samples)
+
+                if bic < best_bic:
+                    best_model = candidate_model
+                    best_bic = bic
+            except ValueError:
+                if self.verbose:
+                    print("failure to calculate BIC with {} components".format(num_components))
+                continue
+
+        return best_model
 
 
 class SelectorDIC(ModelSelector):
@@ -93,8 +112,41 @@ class SelectorDIC(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        best_model = None
+        best_dic = float("-inf")
+
+        num_categories = len(self.words)
+
+        if num_categories == 1:
+            raise ValueError("Length of words must be greater than 1 to use SelectorDIC for model selection.")
+
+        anti_hwords = {k:v for (k,v) in self.hwords.items() if k != self.this_word}
+
+        for num_components in range(self.min_n_components, self.max_n_components + 1):
+            candidate_model = self.base_model(num_components)
+
+            try:
+                likelihood = candidate_model.score(self.X, self.lengths)
+
+                sum_anti_likliehoods = 0
+
+                for word in anti_hwords:
+                    X, lengths = self.hwords[word]
+                    sum_anti_likliehoods += candidate_model.score(X, lengths)
+
+                average_anti_likliehood = sum_anti_likliehoods / (num_categories - 1)
+                dic = likelihood - average_anti_likliehood
+
+                if dic > best_dic:
+                    best_model = candidate_model
+                    best_dic = dic
+
+            except ValueError:
+                if self.verbose:
+                    print("failure to calculate DIC with {} components".format(num_components))
+                continue
+
+        return best_model
 
 
 class SelectorCV(ModelSelector):
@@ -105,5 +157,36 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        best_model = None
+        best_avg_logL = float("-inf")
+
+        for num_components in range(self.min_n_components, self.max_n_components + 1):
+            split_method = KFold(n_splits=min(3, len(self.sequences)))
+            logLs = []
+
+            try:
+                candidate_model = GaussianHMM(n_components=num_components, covariance_type="diag", n_iter=1000,
+                                    random_state=self.random_state, verbose=False)
+            except ValueError:
+                continue
+
+            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                X_train, lengths_train = combine_sequences(cv_train_idx, self.sequences)
+                X_test, lengths_test = combine_sequences(cv_test_idx, self.sequences)
+
+                try:
+                    candidate_model.fit(X_train, lengths_train)
+                    logL = candidate_model.score(X_test, lengths_test)
+                    logLs.append(logL)
+
+                except ValueError:
+                    continue
+
+            if logLs:
+                avg_logL = np.mean(logLs)
+
+                if avg_logL > best_avg_logL:
+                    best_model = candidate_model
+                    best_avg_logL = avg_logL
+
+        return best_model
